@@ -1,0 +1,13 @@
+# Rahasia: JANGAN pernah di-commit
+credentials.json
+authorized_user.json
+.streamlit/secrets.toml
+*.env
+
+# Hasil jalan (berisi username/link creator)
+gabung_preview_*.csv
+gabung_username_belum_ada*.csv
+creator_baru_*.csv
+backup_*.json
+*.zip
+__pycache__/
