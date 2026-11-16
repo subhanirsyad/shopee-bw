@@ -13,6 +13,7 @@ import io
 import os
 import sys
 from collections import Counter
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -176,58 +177,105 @@ def apply_box(key, ready, label='Terapkan ke Sheet'):
 
 
 # ------------------------------------------------------------------ menu 1: Mandatory + Kompetisi
-def page_konten():
-    header('Mandatory + Kompetisi', 'Gabung form Mandatory dan Kompetisi (termasuk link di Docs/Sheet peserta) ke RAW dan Raw Content, satu link per baris.')
-    with st.container(key='form'):
-        c1, c2 = st.columns(2)
-        bulan = c1.text_input('Bulan tab sumber (kata terakhir nama tab)', 'Nov')
-        tambah = c2.text_input('Ikut baca bulan lain, hanya baris bertanggal bulan di kiri (pisah koma)', 'OCT')
-        with st.expander('Pengaturan lain'):
-            only = st.text_input('Pakai tab ini saja (pisah koma, kosong = pilih otomatis)')
-            target = st.text_input('Tab tujuan di Super Sheet (kosong = "RAW <bulan>")')
-            ke_raw = st.checkbox('Tulis ke Raw Content walau bulan sumber beda dengan nama tab (mis. tab Paid September)')
-            raw_tab = st.text_input('Tab Raw Content', kt.RAW_TAB)
-    argv = ['--bulan', bulan.strip(), '--raw-tab', raw_tab.strip()]
-    for b in [x.strip() for x in tambah.split(',') if x.strip()]:
-        argv += ['--tambah-bulan', b]
-    for t in [x.strip() for x in only.split(',') if x.strip()]:
-        argv += ['--tab', t]
-    if target.strip():
-        argv += ['--target', target.strip()]
-    if ke_raw:
-        argv.append('--ke-raw-content')
+BULAN = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des']
+SEMUA, HANYA = 'Semua baris', 'Hanya baris bulan ini'
+BRANDS = list(kt.BRANDS.values())
 
-    if st.button('Cek dulu (tidak menulis)', key='cek_konten', type='primary', disabled=not bulan.strip()):
+
+@st.cache_data(ttl=300, show_spinner=False)
+def super_sheet_tabs():
+    sheets, _, _ = google()
+    meta = sheets.get(spreadsheetId=kt.SHEET_ID, fields='sheets.properties.title').execute(num_retries=3)
+    return [s['properties']['title'] for s in meta['sheets']]
+
+
+def tab_month(title):
+    return kt.month_no(title.split()[-1]) if title.split() else None
+
+
+def tab_table(titles, bm):
+    """Tab sumber di Super Sheet + usulan: tab bulan ini semua barisnya, tab bulan lalu hanya baris bertanggal bulan ini."""
+    prev = (bm - 2) % 12 + 1
+    rows = []
+    for t in titles:
+        low = t.lower()
+        if 'penerima' in low or low.startswith('gabungan') or not (low.startswith(('raw', 'form')) or 'competition' in low):
+            continue
+        m = tab_month(t)
+        tujuan_lama = low.startswith('raw ') and len(t.split()) == 2 and m != bm  # mis. "RAW OCT" = tujuan bulan lalu
+        rank = 0 if m == bm else 1 if m == prev else 2
+        rows.append((rank, {'Pakai': rank < 2 and not tujuan_lama, 'Tab': t, 'Bulan tab': BULAN[m - 1] if m else '?',
+                            'Baris yang diambil': HANYA if m == prev else SEMUA}))
+    return [r for _, r in sorted(rows, key=lambda x: (x[0], x[1]['Tab']))]
+
+
+def page_konten():
+    header('Mandatory + Kompetisi', 'Gabung form Mandatory dan Kompetisi (termasuk link di Docs/Sheet peserta) jadi satu link per baris.')
+    try:
+        titles = super_sheet_tabs()
+    except Exception as e:  # noqa: BLE001
+        st.error(f'Super Sheet tidak bisa dibaca: {e}')
+        return
+    st.markdown('**1. Pilih bulan**')
+    bulan = st.selectbox('Bulan yang diproses', BULAN, index=date.today().month - 1, label_visibility='collapsed')
+    bm = BULAN.index(bulan) + 1
+    st.markdown('**2. Centang tab yang mau dibaca**')
+    st.caption('Tab bulan ini dibaca semua barisnya. Tab bulan lalu hanya barisnya yang bertanggal bulan ini (form lama masih terisi). '
+               'Tab lain, misalnya form Paid, bisa dicentang sendiri.')
+    table = st.data_editor(pd.DataFrame(tab_table(titles, bm)), hide_index=True, key=f'tabs_{bm}', width='stretch',
+                           disabled=['Tab', 'Bulan tab'],
+                           column_config={'Pakai': st.column_config.CheckboxColumn(width='small'),
+                                          'Baris yang diambil': st.column_config.SelectboxColumn(options=[SEMUA, HANYA])})
+    pilih = table[table['Pakai']]
+    pairs = [(r['Tab'], bm if r['Baris yang diambil'] == HANYA else None) for _, r in pilih.iterrows()]
+    lama = [r['Tab'] for _, r in pilih.iterrows() if tab_month(r['Tab']) != bm and r['Baris yang diambil'] == SEMUA]
+    if lama:
+        st.warning('Diambil semua barisnya walau bukan tab bulan ini: ' + ', '.join(lama) +
+                   '. Tanggal aslinya tetap, jadi minggu (W1-W4) di tab brand ikut tanggal itu.')
+    with st.expander('Lanjutan: tab tujuan'):
+        c1, c2 = st.columns(2)
+        target0 = next((t for t in titles if t.lower().startswith('raw ') and len(t.split()) == 2 and tab_month(t) == bm), '')
+        target = c1.text_input('Tab tujuan di Super Sheet', target0, key=f'target_{bm}')
+        raw_tab = c2.text_input('Tab Raw Content di BW Comm', kt.RAW_TAB, key=f'rawtab_{bm}')
+    argv = ['--bulan', bulan, '--target', target.strip(), '--raw-tab', raw_tab.strip(), '--ke-raw-content']
+    sig = (tuple(pairs), tuple(argv))
+
+    st.markdown('**3. Cek dulu**')
+    if st.button('Cek dulu (tidak menulis)', key='cek_konten', type='primary', disabled=not (pairs and target.strip())):
         try:
             with st.spinner('Membaca form dan membuka Docs/Sheet peserta (bisa beberapa menit)...'):
                 sheets, drive, email = google()
-                plan, log = capture(kt.siapkan, kt.buat_parser().parse_args(argv), sheets, drive, email)
-            st.session_state.konten = (argv, plan, log)
+                a = kt.buat_parser().parse_args(argv)
+                a.tabs_pilih = pairs
+                plan, log = capture(kt.siapkan, a, sheets, drive, email)
+            st.session_state.konten = (sig, plan, log)
         except Exception as e:  # noqa: BLE001
             st.session_state.pop('konten', None)
             st.error(f'Gagal: {e}')
     res = st.session_state.get('konten')
-    if not res or res[0] != argv:
+    if not res or res[0] != sig:
         return
     _, p, log = res
-    m = st.columns(4)
-    m[0].metric('Link terbaca', n(len(p.rows)))
-    m[1].metric(f'Baru di {p.target}', n(len(p.g_out)))
-    m[2].metric(f'Baru di {p.a.raw_tab}', n(len(p.r_out)))
-    m[3].metric('Baris sumber diwarnai oranye', n(sum(map(len, p.per_tab.values()))))
+    users = sum(len(u) for _, _, u, _ in p.user_plan)
+    warna = sum(map(len, p.per_tab.values()))
+    st.markdown(f'**Kalau diterapkan:** {n(len(p.g_out))} baris baru masuk ke **{p.target}**, {n(len(p.r_out))} ke **{p.a.raw_tab}**, '
+                f'{n(users)} username baru ditambah ke tab brand, dan {n(warna)} baris di tab sumber diwarnai oranye (sudah masuk).')
+    baru = Counter(r[7] for r in p.g_out)
+    st.dataframe(pd.DataFrame([{'Tab': t, 'Baris yang diambil': HANYA if m else SEMUA, 'Respons dibaca': kept,
+                                'Link ditemukan': links, 'Baru masuk': baru.get(t, 0)} for t, m, total, kept, links in p.info]),
+                 hide_index=True, width='stretch')
     if p.g_out:
-        c = Counter((r[6], r[4]) for r in p.g_out)
-        st.dataframe(pd.DataFrame([{'Tipe': t, 'Jenis Channel': ch, 'Baris baru': v} for (t, ch), v in sorted(c.items())]),
-                     hide_index=True)
-        st.dataframe(rows_table(p.g_out[:2000]), hide_index=True)
-        st.download_button('Unduh pratinjau (CSV)', rows_table(p.g_out).to_csv(index=False).encode('utf-8-sig'),
-                           'pratinjau_konten.csv', 'text/csv')
+        with st.expander(f'Lihat {n(len(p.g_out))} baris baru'):
+            st.dataframe(rows_table(p.g_out[:2000]), hide_index=True)
+            st.download_button('Unduh semua (CSV)', rows_table(p.g_out).to_csv(index=False).encode('utf-8-sig'),
+                               'pratinjau_konten.csv', 'text/csv')
     else:
         st.info('Tidak ada baris baru.')
     if p.user_plan:
         st.subheader('Username yang belum ada di tab brand (akan ditambahkan)')
         st.dataframe(user_table(p.user_plan), hide_index=True)
-    show_log(log)
+    show_log(log, 'Detail proses')
+    st.markdown('**4. Terapkan**')
     if apply_box('konten', bool(p.g_out or p.r_out or p.per_tab or p.user_plan)):
         try:
             with st.spinner('Menulis ke Google Sheets...'):
@@ -241,40 +289,147 @@ def page_konten():
 
 
 # ------------------------------------------------------------------ menu 2: Event
+def event_daftar():
+    """Daftar sumber event: dibaca sekali dari tab "Daftar Event" di sheet Event, kalau belum ada dipakai daftar bawaan."""
+    if 'event_daftar' not in st.session_state:
+        try:
+            sheets, _, _ = google()
+            got = ev.baca_daftar(sheets)
+        except Exception:  # noqa: BLE001
+            got = None
+        st.session_state.event_daftar = got if got is not None else ev.seed_daftar()
+        st.session_state.event_tersimpan = got is not None
+    return st.session_state.event_daftar
+
+
+def clean_daftar(df):
+    rows = []
+    for r in df.to_dict('records'):
+        sid = ev.sheet_id_dari(str(r.get('Sheet ID') or ''))
+        if not (sid and str(r.get('Tab') or '') != ''):
+            continue
+        hr = r.get('Baris header')
+        rows.append({'Aktif': bool(r.get('Aktif')), 'Nama': str(r.get('Nama') or ''), 'Sheet ID': sid, 'Tab': str(r['Tab']),
+                     'Kolom link': str(r.get('Kolom link') or '').strip().upper(),
+                     'Kolom username': str(r.get('Kolom username') or '').strip().upper(),
+                     'Brand': str(r.get('Brand') or ''), 'Baris header': int(hr) if pd.notna(hr) and str(hr).strip() else 1})
+    return rows
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def event_preview(sid, tab):
+    sheets, _, _ = google()
+    vals = sheets.values().get(spreadsheetId=sid, range=f"'{tab}'!A1:AZ15").execute(num_retries=3).get('values', [])
+    w = max((len(r) for r in vals), default=1)
+    return [r + [''] * (w - len(r)) for r in vals] or [['']]
+
+
+def event_tambah():
+    """Form: pilih sheet (link) -> tab -> lihat isinya -> pilih kolom link / username / brand -> tambah ke daftar."""
+    url = st.text_input('Link Google Sheet event', key='ev_url', placeholder='https://docs.google.com/spreadsheets/d/...')
+    if st.button('Baca sheet', key='ev_baca', disabled=not url.strip()):
+        sid = ev.sheet_id_dari(url)
+        try:
+            sheets, _, email = google()
+            meta = sheets.get(spreadsheetId=sid, fields='properties.title,sheets.properties.title').execute(num_retries=3)
+            st.session_state.ev_new = {'sid': sid, 'judul': meta['properties']['title'],
+                                       'tabs': [s['properties']['title'] for s in meta['sheets']]}
+        except Exception as e:  # noqa: BLE001
+            st.session_state.pop('ev_new', None)
+            st.error(f'Sheet tidak bisa dibaca. Share sheet itu ke akun service account sebagai Viewer. ({e})')
+    new = st.session_state.get('ev_new')
+    if not new:
+        return
+    st.success(f"Sheet: {new['judul']}")
+    tab = st.selectbox('Tab', new['tabs'], key=f"ev_tab_{new['sid']}")
+    hrow = st.number_input('Judul kolom ada di baris ke', 1, 15, 1, key=f"ev_hrow_{new['sid']}_{tab}")
+    grid = event_preview(new['sid'], tab)
+    cols = [ev.letters(i) for i in range(len(grid[0]))]
+    st.dataframe(pd.DataFrame(grid, columns=cols, index=range(1, len(grid) + 1)), height=280, width='stretch')
+    head = grid[min(int(hrow), len(grid)) - 1]
+    link_idx = [i for i, h in enumerate(head) if 'link' in h.lower()]
+    user_idx = next((i for i, h in enumerate(head) if 'username' in h.lower() and 'shopee' in h.lower()),
+                    next((i for i, h in enumerate(head) if 'username' in h.lower()), 0))
+    label = lambda i: f'{cols[i]} · {head[i][:38]}'  # noqa: E731
+    k = f"{new['sid']}_{tab}_{hrow}"
+    c1, c2, c3 = st.columns(3)
+    dari = c1.selectbox('Kolom link: dari', range(len(cols)), index=link_idx[0] if link_idx else 0, format_func=label, key=f'ev_dari_{k}')
+    sampai = c2.selectbox('sampai', range(len(cols)), index=link_idx[-1] if link_idx else 0, format_func=label, key=f'ev_sampai_{k}')
+    user = c3.selectbox('Kolom username', range(len(cols)), index=user_idx, format_func=label, key=f'ev_user_{k}')
+    c4, c5 = st.columns(2)
+    brand = c4.selectbox('Brand', BRANDS, key=f'ev_brand_{k}')
+    nama = c5.text_input('Nama (bebas)', f"{new['judul']} / {tab.strip()}", key=f'ev_nama_{k}')
+    if dari > sampai:
+        st.error('Kolom link "dari" harus sebelum "sampai".')
+    elif st.button('Tambah ke daftar', key='ev_tambah', type='primary'):
+        row = {'Aktif': True, 'Nama': nama, 'Sheet ID': new['sid'], 'Tab': tab, 'Kolom link': f'{cols[dari]}:{cols[sampai]}',
+               'Kolom username': cols[user], 'Brand': brand, 'Baris header': int(hrow)}
+        st.session_state.event_daftar = clean_daftar(pd.DataFrame(st.session_state.get('event_now', []))) + [row]
+        st.session_state.pop('ev_editor', None)
+        st.session_state.pop('ev_new', None)
+        st.rerun()
+
+
 def page_event():
-    header('Event', 'Gabung SoW gathering / event (Hari-H, Setelah Event, Threads challenge) ke sheet Event dan Raw Content. Event baru: tambahkan satu baris di EVENTS pada gabung_event_bw.py.')
-    st.dataframe(pd.DataFrame([{'Sheet': s[:8] + '...', 'Tab': t.strip(), 'Kolom link': c, 'Brand': b} for s, t, c, _, b, _ in ev.EVENTS]),
-                 hide_index=True)
-    if st.button('Cek dulu (tidak menulis)', key='cek_event', type='primary'):
+    header('Event', 'Pilih sheet event dan kolom linknya, lalu gabung SoW event ke sheet Event dan Raw Content.')
+    st.markdown('**1. Daftar event**')
+    st.caption('Centang yang mau diproses. Baris bisa diubah langsung (kolom link: G:L, username: E) atau dihapus. '
+               'Sheet baru ditambah di bawah.')
+    editor = st.data_editor(pd.DataFrame(event_daftar(), columns=ev.DAFTAR_KOLOM), hide_index=True, num_rows='dynamic',
+                            key='ev_editor', width='stretch',
+                            column_config={'Aktif': st.column_config.CheckboxColumn(width='small'),
+                                           'Brand': st.column_config.SelectboxColumn(options=BRANDS),
+                                           'Sheet ID': st.column_config.TextColumn(width='small'),
+                                           'Baris header': st.column_config.NumberColumn(min_value=1, step=1, format='%d')})
+    rows = clean_daftar(editor)
+    st.session_state.event_now = rows
+    c1, c2 = st.columns([1, 3])
+    if c1.button('Simpan daftar', key='ev_simpan', help='Disimpan di tab "Daftar Event" pada sheet Event, supaya daftar ini ada lagi nanti.'):
+        try:
+            sheets, _, _ = google()
+            ev.simpan_daftar(sheets, rows)
+            st.session_state.event_tersimpan = True
+            c2.success('Daftar tersimpan.')
+        except Exception as e:  # noqa: BLE001
+            c2.error(f'Gagal menyimpan: {e}')
+    with st.expander('Tambah sheet / tab event baru'):
+        event_tambah()
+
+    st.markdown('**2. Cek dulu**')
+    events = ev.events_dari(rows)
+    if st.button('Cek dulu (tidak menulis)', key='cek_event', type='primary', disabled=not events):
         try:
             with st.spinner('Membaca sheet event dan membuka Docs/Sheet peserta...'):
                 sheets, drive, email = google()
-                res, log = capture(ev.siapkan, sheets, drive, email)
-            st.session_state.event = (res, log)
+                res, log = capture(ev.siapkan, sheets, drive, email, events)
+            st.session_state.event = (events, res, log)
         except Exception as e:  # noqa: BLE001
             st.session_state.pop('event', None)
             st.error(f'Gagal: {e}')
     got = st.session_state.get('event')
-    if not got:
+    if not got or got[0] != events:
         return
-    (rows, plans, user_plan), log = got
+    _, (rows_ev, plans, user_plan), log = got
+    for line in log.splitlines():
+        if 'GAGAL' in line:
+            st.warning(line.strip())
     new_rows = next((out for _, _, _, _, out in plans if out), [])
-    m = st.columns(3)
-    m[0].metric('Link event terbaca', n(len(rows)))
-    m[1].metric('Baris baru', n(len(new_rows)))
-    m[2].metric('Username baru ke tab brand', n(sum(len(u) for _, _, u, _ in user_plan)))
-    if rows:
-        c = Counter((r[7], r[4]) for r in rows)
-        st.dataframe(pd.DataFrame([{'Sumber': s, 'Jenis Channel': ch, 'Link': v} for (s, ch), v in sorted(c.items())]),
-                     hide_index=True)
+    users = sum(len(u) for _, _, u, _ in user_plan)
+    st.markdown(f'**Kalau diterapkan:** {n(len(new_rows))} baris baru masuk ke sheet Event dan Raw Content, '
+                f'{n(users)} username baru ditambah ke tab brand.')
+    baru = Counter(r[7] for r in new_rows)
+    st.dataframe(pd.DataFrame([{'Sumber': s, 'Link terbaca': v, 'Baru masuk': baru.get(s, 0)}
+                               for s, v in sorted(Counter(r[7] for r in rows_ev).items())]), hide_index=True, width='stretch')
     if new_rows:
-        st.dataframe(rows_table(new_rows[:2000]), hide_index=True)
+        with st.expander(f'Lihat {n(len(new_rows))} baris baru'):
+            st.dataframe(rows_table(new_rows[:2000]), hide_index=True)
     else:
         st.info('Tidak ada baris baru.')
     if user_plan:
         st.subheader('Username yang belum ada di tab brand (akan ditambahkan)')
         st.dataframe(user_table(user_plan), hide_index=True)
-    show_log(log)
+    show_log(log, 'Detail proses')
+    st.markdown('**3. Terapkan**')
     if apply_box('event', bool(new_rows or user_plan)):
         try:
             with st.spinner('Menulis ke Google Sheets...'):

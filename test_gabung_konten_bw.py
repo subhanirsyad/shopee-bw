@@ -130,3 +130,13 @@ tpl = ["=COUNTIFS('Raw Content November'!$D$2:$D$9742,\"GAL\",'Raw Content Novem
 assert fill_row(tpl, 1679) == ["=COUNTIFS('Raw Content November'!$D$2:$D,\"GAL\",'Raw Content November'!$I$2:$I,TRIM($B1679))",
                                '=AX1679+AO1679+W1679+N1679', 'x', '']
 assert fill_row(['=A160+B116+C16'], 20) == ['=A160+B116+C20']  # angka yang cuma berakhiran 16 tidak ikut berubah
+
+# daftar event yang bisa diubah dari Streamlit
+from gabung_event_bw import EVENTS, events_dari, letters, seed_daftar, sheet_id_dari  # noqa: E402
+assert sheet_id_dari('https://docs.google.com/spreadsheets/d/1Qnhfd7ZGLau377z_e5oTLgRvCPFHhOBDbUsOyCdhwiA/edit?gid=0#gid=0') == '1Qnhfd7ZGLau377z_e5oTLgRvCPFHhOBDbUsOyCdhwiA'
+assert sheet_id_dari(' 1Qnhfd7ZGLau377z_e5oTLgRvCPFHhOBDbUsOyCdhwiA ') == '1Qnhfd7ZGLau377z_e5oTLgRvCPFHhOBDbUsOyCdhwiA' and sheet_id_dari('abc') == ''
+assert [letters(i) for i in (0, 25, 26, 27, 51, 52)] == ['A', 'Z', 'AA', 'AB', 'AZ', 'BA']
+assert events_dari(seed_daftar()) == [tuple(e) for e in EVENTS]  # daftar bawaan = EVENTS
+d = seed_daftar()
+d[0]['Aktif'] = False
+assert events_dari(d) == [tuple(e) for e in EVENTS[1:]]

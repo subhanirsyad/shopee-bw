@@ -61,18 +61,77 @@ def rows_from_event(values, links, user_col, brand, header_row, sumber, fetch):
         yield from rows_from_tab(sumber, table, fetch)
 
 
-def siapkan(sheets, drive, email):
-    """Tahap baca saja: kumpulkan baris event dan cari yang baru per tujuan. Hasil: (rows, plans, user_plan)."""
+DAFTAR_TAB = 'Daftar Event'  # tab di sheet Event: daftar sumber event yang bisa diubah dari Streamlit
+DAFTAR_KOLOM = ['Aktif', 'Nama', 'Sheet ID', 'Tab', 'Kolom link', 'Kolom username', 'Brand', 'Baris header']
+SEED_NAMES = {'1Qnhfd7ZGLau377z_e5oTLgRvCPFHhOBDbUsOyCdhwiA': 'Gathering Vaseline Proderma',
+              '1-Zzir3ub34gHmWnkY4pqKSdT4h2ILY0okpaOp2tNe8k': 'Clear X Redbull',
+              '1JPRgAE9wIcYVqs870L0ysGi1U0_n5daOGmjq0IFdJAQ': 'Vaseline Affiliate Gathering'}
+
+
+def sheet_id_dari(text):
+    """Link Google Sheet atau ID polos -> ID."""
+    m = re.search(r'/d/([\w-]{20,})', text) or re.fullmatch(r'\s*([\w-]{20,})\s*', text)
+    return m.group(1) if m else ''
+
+
+def letters(i):
+    """0 -> A, 25 -> Z, 26 -> AA."""
+    return (chr(64 + i // 26) if i >= 26 else '') + chr(65 + i % 26)
+
+
+def seed_daftar():
+    return [dict(zip(DAFTAR_KOLOM, (True, SEED_NAMES.get(sid, sid[:8]), sid, tab, links, user, brand, hr)))
+            for sid, tab, links, user, brand, hr in EVENTS]
+
+
+def events_dari(daftar):
+    """Baris daftar yang Aktif -> tuple seperti EVENTS."""
+    return [(r['Sheet ID'], r['Tab'], r['Kolom link'], r['Kolom username'], r['Brand'], int(r['Baris header']))
+            for r in daftar if r.get('Aktif') and r.get('Sheet ID') and r.get('Tab') and r.get('Kolom link')]
+
+
+def baca_daftar(sheets):
+    """Daftar event dari tab 'Daftar Event' di sheet Event, atau None kalau tab itu belum ada."""
+    meta = sheets.get(spreadsheetId=EVENT_SHEET_ID, fields='sheets.properties.title').execute(num_retries=3)
+    if DAFTAR_TAB not in [s['properties']['title'] for s in meta['sheets']]:
+        return None
+    vals = sheets.values().get(spreadsheetId=EVENT_SHEET_ID, range=f"'{DAFTAR_TAB}'!A2:H").execute(num_retries=3).get('values', [])
+    out = []
+    for r in vals:
+        r = r + [''] * (8 - len(r))
+        if r[2].strip() and r[3] != '':
+            out.append({'Aktif': str(r[0]).strip().upper() in ('TRUE', 'YA', '1'), 'Nama': r[1], 'Sheet ID': r[2].strip(),
+                        'Tab': r[3], 'Kolom link': r[4].strip(), 'Kolom username': r[5].strip(), 'Brand': r[6].strip(),
+                        'Baris header': int(r[7]) if str(r[7]).strip().isdigit() else 1})
+    return out
+
+
+def simpan_daftar(sheets, daftar):
+    """Tulis daftar ke tab 'Daftar Event' (dibuat kalau belum ada). Hanya dari tombol Simpan."""
+    meta = sheets.get(spreadsheetId=EVENT_SHEET_ID, fields='sheets.properties.title').execute(num_retries=3)
+    if DAFTAR_TAB not in [s['properties']['title'] for s in meta['sheets']]:
+        sheets.batchUpdate(spreadsheetId=EVENT_SHEET_ID, body={'requests': [{'addSheet': {'properties': {'title': DAFTAR_TAB}}}]}).execute(num_retries=3)
+    sheets.values().clear(spreadsheetId=EVENT_SHEET_ID, range=f"'{DAFTAR_TAB}'!A:H").execute(num_retries=3)
+    body = [DAFTAR_KOLOM] + [[bool(r.get('Aktif')), r.get('Nama', ''), r['Sheet ID'], r['Tab'], r['Kolom link'],
+                              r['Kolom username'], r['Brand'], int(r['Baris header'])] for r in daftar]
+    sheets.values().update(spreadsheetId=EVENT_SHEET_ID, range=f"'{DAFTAR_TAB}'!A1", valueInputOption='RAW',
+                           body={'values': body}).execute(num_retries=3)
+
+
+def siapkan(sheets, drive, email, events=None):
+    """Tahap baca saja: kumpulkan baris event dan cari yang baru per tujuan. Hasil: (rows, plans, user_plan).
+    events = daftar tuple seperti EVENTS (kosong = EVENTS bawaan). Sumber yang tidak bisa dibaca dilaporkan 'GAGAL' dan dilewati."""
     from googleapiclient.errors import HttpError
     fetch, rows, titles = Fetcher(drive), [], {}
-    for sid, tab, links, user_col, brand, header_row in EVENTS:
+    for sid, tab, links, user_col, brand, header_row in (events if events is not None else EVENTS):
         try:
             if sid not in titles:
                 titles[sid] = sheets.get(spreadsheetId=sid, fields='properties.title').execute(
                     num_retries=3)['properties']['title']
             vals = sheets.values().get(spreadsheetId=sid, range=f"'{tab}'").execute(num_retries=3).get('values', [])
         except HttpError as e:
-            sys.exit(f'ERROR: {sid} / "{tab}" tidak bisa dibaca ({e.resp.status}). Share ke {email} sebagai Viewer.')
+            print(f'  GAGAL: {sid} / "{tab}" tidak bisa dibaca ({e.resp.status}). Share sheet ke {email} sebagai Viewer.')
+            continue
         got = list(rows_from_event(vals, links, user_col, brand, header_row, f'{titles[sid]} / {tab.strip()}', fetch))
         print(f'  {titles[sid]} / {tab.strip()} [{links}]: {len(got)} link')
         rows += got

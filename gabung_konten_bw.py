@@ -575,11 +575,13 @@ def siapkan(a, sheets, drive, email):
         if not bm:
             sys.exit(f'ERROR: --tambah-bulan butuh --bulan berupa nama bulan, bukan "{a.bulan}".')
         tabs += [(t, bm) for t in pick_tabs(titles, b) if (t, None) not in tabs and not t.lower().startswith('raw ' + b.lower()[:3])]
+    if getattr(a, 'tabs_pilih', None):  # dari Streamlit: daftar (tab, bulan penyaring atau None) pilihan pengguna
+        tabs = list(a.tabs_pilih)
     if not tabs:
         sys.exit(f'ERROR: tidak ada tab sumber untuk bulan "{a.bulan}".')
     print('Tab sumber:', ', '.join(t + (' (hanya baris bulan ini)' if m else '') for t, m in tabs))
 
-    fetch, rows, ncols = Fetcher(drive), [], {}
+    fetch, rows, ncols, info = Fetcher(drive), [], {}, []
     for t, m in tabs:
         vals = sheets.values().get(spreadsheetId=a.sheet, range=f"'{t}'").execute(num_retries=3).get('values', [])
         total = len(vals) - 1 if vals else 0
@@ -588,6 +590,7 @@ def siapkan(a, sheets, drive, email):
             vals = only_month(vals, m)
         got = list(rows_from_tab(t, vals, fetch))
         print(f'  {t}: {total} respons' + (f', {sum(1 for r in vals[1:] if r)} bulan ini' if m else '') + f' -> {len(got)} link')
+        info.append((t, m, total, sum(1 for r in vals[1:] if r) if m else total, len(got)))
         rows += got
 
     # tujuan 1: tab RAW <bulan> di Super Sheet (sekaligus sumber; baris aslinya dikenali lewat kunci, tidak dobel)
@@ -624,7 +627,7 @@ def siapkan(a, sheets, drive, email):
     for t, n in per_tab.items():
         print(f'  {t}: {len(n)}')
     return SimpleNamespace(a=a, target=target, rows=rows, ncols=ncols, g_out=g_out, g_last=g_last, r_out=r_out,
-                           r_last=r_last, user_plan=user_plan, per_tab=per_tab, tabs=tabs)
+                           r_last=r_last, user_plan=user_plan, per_tab=per_tab, tabs=tabs, info=info)
 
 
 def terapkan(p, sheets):
