@@ -11,3 +11,5 @@ creator_baru_*.csv
 backup_*.json
 *.zip
 __pycache__/
+.streamlit/secrets.cloud.toml
+.streamlit/secrets_cloud.toml
