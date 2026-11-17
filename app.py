@@ -259,7 +259,7 @@ def page_konten():
     users = sum(len(u) for _, _, u, _ in p.user_plan)
     warna = sum(map(len, p.per_tab.values()))
     st.markdown(f'**Kalau diterapkan:** {n(len(p.g_out))} baris baru masuk ke **{p.target}**, {n(len(p.r_out))} ke **{p.a.raw_tab}**, '
-                f'{n(users)} username baru ditambah ke tab brand, dan {n(warna)} baris di tab sumber diwarnai oranye (sudah masuk).')
+                f'{n(users)} username baru ditambah ke tab brand, dan kolom Username Shopee di {n(warna)} baris tab sumber diwarnai oranye (tanda sudah masuk).')
     baru = Counter(r[7] for r in p.g_out)
     st.dataframe(pd.DataFrame([{'Tab': t, 'Baris yang diambil': HANYA if m else SEMUA, 'Respons dibaca': kept,
                                 'Link ditemukan': links, 'Baru masuk': baru.get(t, 0)} for t, m, total, kept, links in p.info]),

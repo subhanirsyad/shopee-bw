@@ -4,7 +4,7 @@ Streamlit untuk sheet BW Comm Shopee x WEI: gabung konten Mandatory + Kompetisi,
 Tiap menu dua langkah: **Cek dulu** (hanya baca) lalu **Terapkan ke Sheet** (menulis, setelah dicentang).
 
 ## Menu
-- **Mandatory + Kompetisi** (`gabung_konten_bw.py`): form Mandatory/Kompetisi + link di Docs/Sheet peserta -> tab RAW dan Raw Content, satu link per baris, tanpa dobel. Baris sumber yang sudah masuk diwarnai oranye. Username yang belum ada di tab brand ditambahkan.
+- **Mandatory + Kompetisi** (`gabung_konten_bw.py`): form Mandatory/Kompetisi + link di Docs/Sheet peserta -> tab RAW dan Raw Content, satu link per baris, tanpa dobel. Kolom Username Shopee di baris sumber yang sudah masuk diwarnai oranye. Username yang belum ada di tab brand ditambahkan.
 - **Event** (`gabung_event_bw.py`): SoW gathering/event. Event baru: tambah satu baris di `EVENTS`.
 - **GMV Raw Affiliate** (`shopee_raw_to_sheet.py`): upload raw affiliate -> tab Raw, creator baru ke tab brand, tally, performa creator.
 

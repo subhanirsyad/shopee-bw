@@ -513,8 +513,14 @@ def rows_done(rows, ok, skip_tab):
     return {t: sorted(n for n in ns if (t, n) not in bad) for t, ns in seen.items() if t != skip_tab}
 
 
-def mark_orange(sheets, sid, per_tab, ncols):
-    """Warnai baris sumber yang sudah masuk (hanya latar belakang, isi sel tidak diubah)."""
+def username_cols(header):
+    """Indeks kolom 'Username Shopee' di baris judul (kalau tidak ada, kolom yang judulnya memuat 'username')."""
+    low = [h.strip().lower() for h in header]
+    return [i for i, h in enumerate(low) if 'username shopee' in h] or [i for i, h in enumerate(low) if 'username' in h]
+
+
+def mark_orange(sheets, sid, per_tab, ucols):
+    """Warnai sel Username Shopee di baris sumber yang sudah masuk (hanya latar belakang, isi sel tidak diubah)."""
     meta = sheets.get(spreadsheetId=sid, fields='sheets.properties').execute(num_retries=3)
     ids = {x['properties']['title']: x['properties']['sheetId'] for x in meta['sheets']}
     reqs = []
@@ -526,10 +532,11 @@ def mark_orange(sheets, sid, per_tab, ncols):
             else:
                 runs.append([n, n])
         for a, b in runs:
-            reqs.append({'repeatCell': {'range': {'sheetId': ids[tab], 'startRowIndex': a - 1, 'endRowIndex': b,
-                                                  'startColumnIndex': 0, 'endColumnIndex': ncols[tab]},
-                                        'cell': {'userEnteredFormat': {'backgroundColor': ORANGE}},
-                                        'fields': 'userEnteredFormat.backgroundColor'}})
+            for c in ucols.get(tab, []):
+                reqs.append({'repeatCell': {'range': {'sheetId': ids[tab], 'startRowIndex': a - 1, 'endRowIndex': b,
+                                                      'startColumnIndex': c, 'endColumnIndex': c + 1},
+                                            'cell': {'userEnteredFormat': {'backgroundColor': ORANGE}},
+                                            'fields': 'userEnteredFormat.backgroundColor'}})
     for i in range(0, len(reqs), 100):
         sheets.batchUpdate(spreadsheetId=sid, body={'requests': reqs[i:i + 100]}).execute(num_retries=3)
 
@@ -581,11 +588,11 @@ def siapkan(a, sheets, drive, email):
         sys.exit(f'ERROR: tidak ada tab sumber untuk bulan "{a.bulan}".')
     print('Tab sumber:', ', '.join(t + (' (hanya baris bulan ini)' if m else '') for t, m in tabs))
 
-    fetch, rows, ncols, info = Fetcher(drive), [], {}, []
+    fetch, rows, ucols, info = Fetcher(drive), [], {}, []
     for t, m in tabs:
         vals = sheets.values().get(spreadsheetId=a.sheet, range=f"'{t}'").execute(num_retries=3).get('values', [])
         total = len(vals) - 1 if vals else 0
-        ncols[t] = max(len(vals[0]), 1) if vals else 1
+        ucols[t] = username_cols(vals[0]) if vals else []
         if m:
             vals = only_month(vals, m)
         got = list(rows_from_tab(t, vals, fetch))
@@ -626,13 +633,13 @@ def siapkan(a, sheets, drive, email):
     print(f'Baris sumber yang diwarnai oranye (semua link-nya sudah masuk): {sum(map(len, per_tab.values()))}')
     for t, n in per_tab.items():
         print(f'  {t}: {len(n)}')
-    return SimpleNamespace(a=a, target=target, rows=rows, ncols=ncols, g_out=g_out, g_last=g_last, r_out=r_out,
+    return SimpleNamespace(a=a, target=target, rows=rows, ucols=ucols, g_out=g_out, g_last=g_last, r_out=r_out,
                            r_last=r_last, user_plan=user_plan, per_tab=per_tab, tabs=tabs, info=info)
 
 
 def terapkan(p, sheets):
     """Tahap tulis (hanya dipanggil dari --apply / tombol Terapkan)."""
-    a, target, ncols, g_out, g_last, r_out, r_last = p.a, p.target, p.ncols, p.g_out, p.g_last, p.r_out, p.r_last
+    a, target, ucols, g_out, g_last, r_out, r_last = p.a, p.target, p.ucols, p.g_out, p.g_last, p.r_out, p.r_last
     user_plan, per_tab = p.user_plan, p.per_tab
     if g_out:
         write_below(sheets, a.sheet, target, g_last + 1, g_out, 'H')
@@ -643,8 +650,8 @@ def terapkan(p, sheets):
     if user_plan:
         from datetime import datetime
         apply_users(sheets, a.raw_sheet, user_plan, HERE / f'backup_username_tab_brand_{datetime.now():%Y%m%d_%H%M%S}.json')
-    mark_orange(sheets, a.sheet, per_tab, ncols)
-    print(f'Selesai: {sum(map(len, per_tab.values()))} baris sumber diwarnai oranye.')
+    mark_orange(sheets, a.sheet, per_tab, ucols)
+    print(f'Selesai: {sum(map(len, per_tab.values()))} baris sumber diwarnai oranye (kolom Username Shopee).')
 
 
 def main(argv=None):

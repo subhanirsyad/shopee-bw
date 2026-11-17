@@ -140,3 +140,8 @@ assert events_dari(seed_daftar()) == [tuple(e) for e in EVENTS]  # daftar bawaan
 d = seed_daftar()
 d[0]['Aktif'] = False
 assert events_dari(d) == [tuple(e) for e in EVENTS[1:]]
+
+# penanda oranye hanya di kolom Username Shopee
+from gabung_konten_bw import username_cols  # noqa: E402
+assert username_cols(['Timestamp', 'Username Shopee', 'Link', 'Username Shopee ']) == [1, 3]
+assert username_cols(['Timestamp', 'Username Tiktok', 'Link']) == [1] and username_cols(['A', 'B']) == []
