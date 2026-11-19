@@ -495,7 +495,7 @@ def apply_users(sheets, sid, plan, backup_path):
             n = first + k
             data += [{'range': f"'{tab}'!B{n}", 'values': [[u]]},
                      {'range': f"'{tab}'!N{n}:CF{n}", 'values': [fill_row(tpl, n)]}]
-    pathlib.Path(backup_path).write_text(json.dumps(backup), encoding='utf-8')
+    Path(backup_path).write_text(json.dumps(backup), encoding='utf-8')
     print(f'Backup isi lama baris tab brand: {backup_path}')
     for i in range(0, len(data), 100):
         sheets.values().batchUpdate(spreadsheetId=sid, body={'valueInputOption': 'USER_ENTERED', 'data': data[i:i + 100]}).execute(num_retries=3)
