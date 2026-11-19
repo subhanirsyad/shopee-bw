@@ -114,17 +114,19 @@ def siapkan(sheets, src_id, src_tab, r1, r2, trk_id):
 
     brands = {}
     for tab, by_target in per.items():
-        head = [h.strip() for h in (get(sheets, trk_id, f"'{tab}'!A{HEADER_ROW}:AZ{HEADER_ROW}") or [[]])[0]]
+        grid = get(sheets, trk_id, f"'{tab}'!A{HEADER_ROW}:AZ", valueRenderOption='FORMULA')  # 1 request per brand (kuota baca 60/menit)
+        head = [h.strip() for h in (grid[0] if grid else [])]
         gone = [h for h in [USER_HEAD, *TARGETS] if h not in head]
         if gone:
             brands[tab] = {'error': f'header baris {HEADER_ROW} tidak punya kolom: {", ".join(gone)}'}
             continue
         cols = {h: letter(head.index(h)) for h in [USER_HEAD, *TARGETS]}
-        order = [norm(x[0]) if x else '' for x in get(sheets, trk_id, f"'{tab}'!{cols[USER_HEAD]}{FIRST_ROW}:{cols[USER_HEAD]}")]
-        last = FIRST_ROW + len(order) - 1
-        old = {t: get(sheets, trk_id, f"'{tab}'!{cols[t]}{FIRST_ROW}:{cols[t]}{last}", valueRenderOption='FORMULA')
-               for t in TARGETS} if order else {t: [] for t in TARGETS}
-        cell = lambda t, i: (old[t][i][0] if i < len(old[t]) and old[t][i] else '')  # noqa: E731
+        body = grid[FIRST_ROW - HEADER_ROW:]
+        cell = lambda t, i: (body[i][head.index(t)] if i < len(body) and head.index(t) < len(body[i]) else '')  # noqa: E731
+        ui = head.index(USER_HEAD)
+        order = [norm(r[ui]) if len(r) > ui else '' for r in body]
+        while order and not order[-1]:
+            order.pop()  # kolom lain (mis. No) bisa berisi rumus sampai bawah; yang dihitung baris terakhir yang ada username
         cells, added, formulas, seen = [], Counter(), 0, set()
         for i, u in enumerate(order):
             if not u or u in seen:
@@ -147,7 +149,7 @@ def siapkan(sheets, src_id, src_tab, r1, r2, trk_id):
             new.append({'user': u, 'nama': display[u], 'curiga': curiga(display[u], list(known) + [x for x in new_users if x != u]),
                         'links': {t: text for t, (text, _) in texts.items()}})
         brands[tab] = {'cols': cols, 'n_old': len(order), 'cells': cells, 'added': added, 'formulas': formulas, 'new': new,
-                       'backup': {t: old[t] for t in TARGETS}}
+                       'backup': {t: [[cell(t, i)] for i in range(len(order))] for t in TARGETS}}
         print(f'  {tab}: {sum(added.values())} link baru ({len(cells)} sel), {len(new)} username baru, {formulas} sel berisi rumus akan ditimpa')
     for why, c in skipped.items():
         print(f'  dilewati {c} baris: {why}')
