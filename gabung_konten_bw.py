@@ -484,6 +484,10 @@ def apply_users(sheets, sid, plan, backup_path):
         rows_now = props[tab]['gridProperties']['rowCount']
         if last > rows_now:
             grow.append({'appendDimension': {'sheetId': props[tab]['sheetId'], 'dimension': 'ROWS', 'length': last - rows_now}})
+    if grow:  # perluas grid dulu: membaca backup di luar batas grid bikin error 400
+        sheets.batchUpdate(spreadsheetId=sid, body={'requests': grow}).execute(num_retries=3)
+    for tab, first, users, tpl in plan:
+        last = first + len(users) - 1
         rng = f"'{tab}'!N{first}:CF{last}"
         backup[rng] = sheets.values().get(spreadsheetId=sid, range=rng, valueRenderOption='FORMULA').execute(
             num_retries=3).get('values', [])
@@ -493,8 +497,6 @@ def apply_users(sheets, sid, plan, backup_path):
                      {'range': f"'{tab}'!N{n}:CF{n}", 'values': [fill_row(tpl, n)]}]
     pathlib.Path(backup_path).write_text(json.dumps(backup), encoding='utf-8')
     print(f'Backup isi lama baris tab brand: {backup_path}')
-    if grow:
-        sheets.batchUpdate(spreadsheetId=sid, body={'requests': grow}).execute(num_retries=3)
     for i in range(0, len(data), 100):
         sheets.values().batchUpdate(spreadsheetId=sid, body={'valueInputOption': 'USER_ENTERED', 'data': data[i:i + 100]}).execute(num_retries=3)
     print(f'Selesai: {sum(len(u) for _, _, u, _ in plan)} username ditambahkan ke tab brand.')
