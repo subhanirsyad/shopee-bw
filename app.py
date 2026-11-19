@@ -24,6 +24,7 @@ HERE = Path(__file__).resolve().parent
 for p in (HERE, HERE.parent):  # modul inti: di folder ini (zip) atau di folder induk (pengembangan)
     if str(p) not in sys.path:
         sys.path.append(str(p))
+import bank_konten_bw as bk  # noqa: E402
 import gabung_event_bw as ev  # noqa: E402
 import gabung_konten_bw as kt  # noqa: E402
 import shopee_raw_to_sheet as gmv  # noqa: E402
@@ -31,7 +32,7 @@ import shopee_raw_to_sheet as gmv  # noqa: E402
 DOMAIN = 'warnaemasindonesia.com'
 LOCAL_MODE = os.environ.get('SHOPEE_BW_LOKAL') == '1'  # hanya diset jalankan.bat; di server tidak ada, login tetap wajib
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive.readonly']
-MENU = {'konten': 'Mandatory + Kompetisi', 'event': 'Event', 'gmv': 'GMV Raw Affiliate'}
+MENU = {'konten': 'Mandatory + Kompetisi', 'event': 'Event', 'bank': 'Bank Konten Creator', 'gmv': 'GMV Raw Affiliate'}
 
 CSS = """<style>
 :root{--bg:#f4f4f5;--panel:#fff;--muted:#6b6b6b;--line:#e4e4e7;--gold:#ffd700;
@@ -139,6 +140,15 @@ def n(x):
     return f'{x:,}'.replace(',', '.')
 
 
+def sheet_link(label, key):
+    """Isian link Google Sheet (wajib, tidak disimpan). Mengembalikan ID, atau '' kalau kosong / bukan link sheet."""
+    url = st.text_input(label, key=key, placeholder='https://docs.google.com/spreadsheets/d/...')
+    sid = ev.sheet_id_dari(url)
+    if url.strip() and not sid:
+        st.caption('Bukan link Google Sheet.')
+    return sid
+
+
 # ------------------------------------------------------------------ helper jalan
 class Live(io.StringIO):
     """Simpan semua print untuk log akhir, sekaligus tampilkan 25 baris terakhir langsung di halaman selagi jalan."""
@@ -204,9 +214,9 @@ BRANDS = list(kt.BRANDS.values())
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def super_sheet_tabs():
+def super_sheet_tabs(sid):
     sheets, _, _ = google()
-    meta = sheets.get(spreadsheetId=kt.SHEET_ID, fields='sheets.properties.title').execute(num_retries=3)
+    meta = sheets.get(spreadsheetId=sid, fields='sheets.properties.title').execute(num_retries=3)
     return [s['properties']['title'] for s in meta['sheets']]
 
 
@@ -232,10 +242,19 @@ def tab_table(titles, bm):
 
 def page_konten():
     header('Mandatory + Kompetisi', 'Gabung form Mandatory dan Kompetisi (termasuk link di Docs/Sheet peserta) jadi satu link per baris.')
+    st.markdown('**Sheet**')
+    c1, c2 = st.columns(2)
+    with c1:
+        src = sheet_link('Link sheet input (Super Sheet: form dan Competition)', 'kt_src')
+    with c2:
+        dst = sheet_link('Link sheet tujuan (BW Comm: Raw Content dan tab brand)', 'kt_dst')
+    if not (src and dst):
+        st.info('Isi link sheet input dan sheet tujuan dulu. Dua-duanya wajib dan tidak disimpan.')
+        return
     try:
-        titles = super_sheet_tabs()
+        titles = super_sheet_tabs(src)
     except Exception as e:  # noqa: BLE001
-        st.error(f'Super Sheet tidak bisa dibaca: {e}')
+        st.error(f'Sheet input tidak bisa dibaca. Share ke service account sebagai Viewer. ({e})')
         return
     st.markdown('**1. Pilih bulan**')
     bulan = st.selectbox('Bulan yang diproses', BULAN, index=date.today().month - 1, label_visibility='collapsed')
@@ -258,7 +277,8 @@ def page_konten():
         target0 = next((t for t in titles if t.lower().startswith('raw ') and len(t.split()) == 2 and tab_month(t) == bm), '')
         target = c1.text_input('Tab tujuan di Super Sheet', target0, key=f'target_{bm}')
         raw_tab = c2.text_input('Tab Raw Content di BW Comm', kt.RAW_TAB, key=f'rawtab_{bm}')
-    argv = ['--bulan', bulan, '--target', target.strip(), '--raw-tab', raw_tab.strip(), '--ke-raw-content']
+    argv = ['--bulan', bulan, '--target', target.strip(), '--raw-tab', raw_tab.strip(), '--ke-raw-content',
+            '--sheet', src, '--raw-sheet', dst]
     sig = (tuple(pairs), tuple(argv))
 
     st.markdown('**3. Cek dulu**')
@@ -310,19 +330,6 @@ def page_konten():
 
 
 # ------------------------------------------------------------------ menu 2: Event
-def event_daftar():
-    """Daftar sumber event: dibaca sekali dari tab "Daftar Event" di sheet Event, kalau belum ada dipakai daftar bawaan."""
-    if 'event_daftar' not in st.session_state:
-        try:
-            sheets, _, _ = google()
-            got = ev.baca_daftar(sheets)
-        except Exception:  # noqa: BLE001
-            got = None
-        st.session_state.event_daftar = got if got is not None else ev.seed_daftar()
-        st.session_state.event_tersimpan = got is not None
-    return st.session_state.event_daftar
-
-
 def clean_daftar(df):
     rows = []
     for r in df.to_dict('records'):
@@ -392,52 +399,58 @@ def event_tambah():
 
 
 def page_event():
-    header('Event', 'Pilih sheet event dan kolom linknya, lalu gabung SoW event ke sheet Event dan Raw Content.')
-    st.markdown('**1. Daftar event**')
-    st.caption('Centang yang mau diproses. Baris bisa diubah langsung (kolom link: G:L, username: E) atau dihapus. '
-               'Sheet baru ditambah di bawah.')
-    editor = st.data_editor(pd.DataFrame(event_daftar(), columns=ev.DAFTAR_KOLOM), hide_index=True, num_rows='dynamic',
-                            key='ev_editor', width='stretch',
-                            column_config={'Aktif': st.column_config.CheckboxColumn(width='small'),
-                                           'Brand': st.column_config.SelectboxColumn(options=BRANDS),
-                                           'Sheet ID': st.column_config.TextColumn(width='small'),
-                                           'Baris header': st.column_config.NumberColumn(min_value=1, step=1, format='%d')})
-    rows = clean_daftar(editor)
+    header('Event', 'Tempel link sheet event, pilih tab dan kolomnya, lalu gabung SoW event ke sheet Event dan Raw Content.')
+    st.markdown('**1. Sheet tujuan**')
+    c1, c2, c3 = st.columns([2, 2, 1])
+    with c1:
+        ev_sheet = sheet_link('Link sheet Event (tujuan 1)', 'ev_dst1')
+    with c2:
+        raw_sheet = sheet_link('Link BW Comm (tujuan 2: Raw Content dan tab brand)', 'ev_dst2')
+    raw_tab = c3.text_input('Tab Raw Content', kt.RAW_TAB, key='ev_rawtab').strip()
+    st.markdown('**2. Sheet event yang diproses**')
+    st.caption('Tempel link sheet event, baca, pilih tab dan kolomnya, lalu tambah. Daftar ini tidak disimpan: '
+               'kalau halaman ditutup, mulai dari kosong lagi.')
+    event_tambah()
+    daftar = st.session_state.setdefault('event_daftar', [])
+    rows = []
+    if daftar:
+        editor = st.data_editor(pd.DataFrame(daftar, columns=ev.DAFTAR_KOLOM), hide_index=True, num_rows='dynamic',
+                                key='ev_editor', width='stretch',
+                                column_config={'Aktif': st.column_config.CheckboxColumn(width='small'),
+                                               'Brand': st.column_config.SelectboxColumn(options=BRANDS),
+                                               'Sheet ID': st.column_config.TextColumn(width='small'),
+                                               'Baris header': st.column_config.NumberColumn(min_value=1, step=1, format='%d')})
+        rows = clean_daftar(editor)
     st.session_state.event_now = rows
-    c1, c2 = st.columns([1, 3])
-    if c1.button('Simpan daftar', key='ev_simpan', help='Disimpan di tab "Daftar Event" pada sheet Event, supaya daftar ini ada lagi nanti.'):
-        try:
-            sheets, _, _ = google()
-            ev.simpan_daftar(sheets, rows)
-            st.session_state.event_tersimpan = True
-            c2.success('Daftar tersimpan.')
-        except Exception as e:  # noqa: BLE001
-            c2.error(f'Gagal menyimpan: {e}')
-    with st.expander('Tambah sheet / tab event baru'):
-        event_tambah()
 
-    st.markdown('**2. Cek dulu**')
+    st.markdown('**3. Cek dulu**')
     events = ev.events_dari(rows)
-    if st.button('Cek dulu (tidak menulis)', key='cek_event', type='primary', disabled=not events):
+    sig = (tuple(events), ev_sheet, raw_sheet, raw_tab)
+    ready = bool(events and ev_sheet and raw_sheet and raw_tab)
+    if not ready:
+        st.caption('Tombol aktif kalau link tujuan terisi dan ada sheet event yang dicentang.')
+    if st.button('Cek dulu (tidak menulis)', key='cek_event', type='primary', disabled=not ready):
         try:
             with st.spinner('Membaca sheet event dan membuka Docs/Sheet peserta...'):
                 sheets, drive, email = google()
-                res, log = capture(ev.siapkan, sheets, drive, email, events)
-            st.session_state.event = (events, res, log)
+                res, log = capture(ev.siapkan, sheets, drive, email, events, ev_sheet, raw_sheet, raw_tab)
+            st.session_state.event = (sig, res, log)
         except Exception as e:  # noqa: BLE001
             st.session_state.pop('event', None)
             st.error(f'Gagal: {e}')
     got = st.session_state.get('event')
-    if not got or got[0] != events:
+    if not got or got[0] != sig:
         return
-    _, (rows_ev, plans, user_plan), log = got
+    _, (rows_ev, plans, user_plan, warna), log = got
     for line in log.splitlines():
         if 'GAGAL' in line:
             st.warning(line.strip())
     new_rows = next((out for _, _, _, _, out in plans if out), [])
     users = sum(len(u) for _, _, u, _ in user_plan)
+    oren = sum(len(v) for per_tab, _ in warna.values() for v in per_tab.values())
     st.markdown(f'**Kalau diterapkan:** {n(len(new_rows))} baris baru masuk ke sheet Event dan Raw Content, '
-                f'{n(users)} username baru ditambah ke tab brand.')
+                f'{n(users)} username baru ditambah ke tab brand, dan kolom username di {n(oren)} baris sheet event '
+                f'diwarnai oranye (tanda sudah masuk; butuh akses Editor di sheet event).')
     baru = Counter(r[7] for r in new_rows)
     st.dataframe(pd.DataFrame([{'Sumber': s, 'Link terbaca': v, 'Baru masuk': baru.get(s, 0)}
                                for s, v in sorted(Counter(r[7] for r in rows_ev).items())]), hide_index=True, width='stretch')
@@ -450,12 +463,12 @@ def page_event():
         st.subheader('Username yang belum ada di tab brand (akan ditambahkan)')
         st.dataframe(user_table(user_plan), hide_index=True)
     show_log(log, 'Detail proses')
-    st.markdown('**3. Terapkan**')
-    if apply_box('event', bool(new_rows or user_plan)):
+    st.markdown('**4. Terapkan**')
+    if apply_box('event', bool(new_rows or user_plan or warna)):
         try:
             with st.spinner('Menulis ke Google Sheets...'):
                 sheets, _, _ = google()
-                _, out = capture(ev.terapkan, plans, user_plan, sheets)
+                _, out = capture(ev.terapkan, plans, user_plan, sheets, warna, raw_sheet)
             st.success('Selesai ditulis.')
             show_log(out, 'Log penulisan')
             st.session_state.pop('event', None)
@@ -463,7 +476,93 @@ def page_event():
             st.error(f'Gagal menulis: {e}')
 
 
-# ------------------------------------------------------------------ menu 3: GMV raw affiliate
+# ------------------------------------------------------------------ menu 3: Bank Konten Creator
+def page_bank():
+    header('Bank Konten Creator', 'Tarik link konten per creator dari tab Raw Content ke tab brand di Tracker Sample.')
+    c1, c2 = st.columns(2)
+    with c1:
+        src = sheet_link('Link sheet input (BW Comm, tab Raw Content)', 'bk_src')
+    with c2:
+        trk = sheet_link('Link sheet tujuan (Tracker Sample)', 'bk_trk')
+    if not (src and trk):
+        st.info('Isi link sheet input dan sheet tujuan dulu. Dua-duanya wajib dan tidak disimpan.')
+        return
+    st.markdown('**1. Baca kedua sheet**')
+    if st.button('Baca kedua sheet', key='bk_baca', type='primary'):
+        try:
+            sheets, _, _ = google()
+            st.session_state.bk_meta = {'ids': (src, trk), 'src': bk.baca_meta(sheets, src), 'trk': bk.baca_meta(sheets, trk)}
+        except Exception as e:  # noqa: BLE001
+            st.session_state.pop('bk_meta', None)
+            st.error(f'Sheet tidak bisa dibaca. Share ke service account (Viewer untuk input, Editor untuk tujuan). ({e})')
+    meta = st.session_state.get('bk_meta')
+    if not meta or meta['ids'] != (src, trk):
+        return
+    st.success(f"Input: {meta['src'][0]} · Tujuan: {meta['trk'][0]}")
+    tabs = dict(meta['src'][1])
+    names = list(tabs)
+    st.markdown('**2. Tab dan baris sumber**')
+    tab = st.selectbox('Tab sumber', names, index=next((i for i, t in enumerate(names) if 'raw content' in t.lower()), 0), key='bk_tab')
+    last = tabs[tab]
+    c1, c2 = st.columns(2)
+    r1 = int(c1.number_input('Dari baris', 2, last, 2, key=f'bk_r1_{tab}'))
+    r2 = int(c2.number_input('Sampai baris', 2, last, last, key=f'bk_r2_{tab}'))
+    grid = event_preview(src, tab)[:4]
+    st.dataframe(pd.DataFrame(grid, columns=[ev.letters(i) for i in range(len(grid[0]))], index=range(1, len(grid) + 1)), width='stretch')
+    st.caption('Header baris 1 harus punya kolom Username Shopee, BRANDS, Jenis Channel, Link, dan Tipe. '
+               f'Tab tujuan yang dikenali: {", ".join(t for t, _ in meta["trk"][1] if t.lower() in {b.lower() for b in BRANDS})}.')
+    sig = (src, trk, tab, r1, r2)
+
+    st.markdown('**3. Cek dulu**')
+    if st.button('Cek dulu (tidak menulis)', key='cek_bank', type='primary', disabled=r1 > r2):
+        try:
+            with st.spinner('Membaca sumber dan tab brand di tujuan...'):
+                sheets, _, _ = google()
+                p, log = capture(bk.siapkan, sheets, src, tab, r1, r2, trk)
+            st.session_state.bank = (sig, p, log)
+        except Exception as e:  # noqa: BLE001
+            st.session_state.pop('bank', None)
+            st.error(f'Gagal: {e}')
+    res = st.session_state.get('bank')
+    if not res or res[0] != sig:
+        return
+    _, p, log = res
+    for why, c in p.skipped.items():
+        st.warning(f'{n(c)} baris dilewati: {why}')
+    for t, b in p.brands.items():
+        if 'error' in b:
+            st.error(f'Tab {t} dilewati: {b["error"]}')
+    ok = {t: b for t, b in p.brands.items() if 'error' not in b}
+    st.dataframe(pd.DataFrame([{'Tab brand': t, 'Link baru': sum(b['added'].values()), 'Sel diisi': len(b['cells']),
+                                'Username baru': len(b['new']), 'Rumus ditimpa': b['formulas'], **dict(b['added'])}
+                               for t, b in ok.items()]), hide_index=True, width='stretch')
+    flat = [(t, u) for t, b in ok.items() for u in b['new']]
+    tambah = {}
+    if flat:
+        st.subheader('Username baru di sumber (belum ada di tab brand)')
+        st.caption('Yang kelihatan typo (karakter aneh, nomor HP, mirip username lain) tidak dicentang. Centang untuk tetap menambahkan.')
+        ed = st.data_editor(pd.DataFrame([{'Tambah': not u['curiga'], 'Tab brand': t, 'Username': u['nama'], 'Catatan': u['curiga']}
+                                          for t, u in flat]), hide_index=True, width='stretch', key=f'bk_new_{hash(sig)}',
+                            disabled=['Tab brand', 'Username', 'Catatan'],
+                            column_config={'Tambah': st.column_config.CheckboxColumn(width='small')})
+        for (t, u), yes in zip(flat, ed['Tambah']):
+            if yes:
+                tambah.setdefault(t, set()).add(u['user'])
+    show_log(log, 'Detail proses')
+    st.markdown('**4. Terapkan**')
+    if apply_box('bank', bool(any(b['cells'] for b in ok.values()) or tambah)):
+        try:
+            with st.spinner('Menulis ke Google Sheets...'):
+                sheets, _, _ = google()
+                _, out = capture(bk.terapkan, p, sheets, tambah)
+            st.success('Selesai ditulis.')
+            show_log(out, 'Log penulisan')
+            st.session_state.pop('bank', None)
+        except Exception as e:  # noqa: BLE001
+            st.error(f'Gagal menulis: {e}')
+
+
+# ------------------------------------------------------------------ menu 4: GMV raw affiliate
 def read_raw(up):
     return pd.read_excel(up) if up.name.lower().endswith(('.xlsx', '.xls')) else pd.read_csv(up, encoding='utf-8-sig', low_memory=False)
 
@@ -578,7 +677,7 @@ def main():
             login_page(f'Akun {email} tidak punya akses. Pakai akun @{DOMAIN}.', can_logout=True)
             st.stop()
     st.session_state.setdefault('page', 'konten')
-    {'konten': page_konten, 'event': page_event, 'gmv': page_gmv}[sidebar(email)]()
+    {'konten': page_konten, 'event': page_event, 'bank': page_bank, 'gmv': page_gmv}[sidebar(email)]()
 
 
 if __name__ == '__main__':

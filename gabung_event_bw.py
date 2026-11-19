@@ -12,8 +12,8 @@ import re
 import sys
 from datetime import datetime
 
-from gabung_konten_bw import (BRAND_WORDS, HERE, apply_users, plan_users, RAW_SHEET_ID, RAW_TAB, Fetcher, new_rows, read_keys, report,
-                              rows_from_tab, services, stale_formulas, write_below)
+from gabung_konten_bw import (BRAND_WORDS, HERE, apply_users, key, mark_orange, plan_users, RAW_SHEET_ID, RAW_TAB, Fetcher, new_rows,
+                              read_keys, report, rows_done, rows_from_tab, services, stale_formulas, write_below)
 
 # sheet, tab, kolom link, kolom username, brand, baris header (data mulai baris sesudahnya)
 EVENTS = [
@@ -57,15 +57,13 @@ def rows_from_event(values, links, user_col, brand, header_row, sumber, fetch):
         h = get(head, c)
         table = [['Timestamp', 'Username Shopee', 'Produk', 'BRANDS', 'Tipe', h if 'link' in h.lower() else 'Link ' + h]]
         table += [[ddmm(get(r, 0)), get(r, col(user_col)), produk_of(h), brand, 'Event', get(r, c)]
-                  for r in data if get(r, c)]
-        yield from rows_from_tab(sumber, table, fetch)
+                  for r in data]
+        for row in rows_from_tab(sumber, table, fetch):
+            row[9] += header_row - 1  # nomor baris di tabel kecil -> nomor baris di sheet sumber
+            yield row
 
 
-DAFTAR_TAB = 'Daftar Event'  # tab di sheet Event: daftar sumber event yang bisa diubah dari Streamlit
 DAFTAR_KOLOM = ['Aktif', 'Nama', 'Sheet ID', 'Tab', 'Kolom link', 'Kolom username', 'Brand', 'Baris header']
-SEED_NAMES = {'1Qnhfd7ZGLau377z_e5oTLgRvCPFHhOBDbUsOyCdhwiA': 'Gathering Vaseline Proderma',
-              '1-Zzir3ub34gHmWnkY4pqKSdT4h2ILY0okpaOp2tNe8k': 'Clear X Redbull',
-              '1JPRgAE9wIcYVqs870L0ysGi1U0_n5daOGmjq0IFdJAQ': 'Vaseline Affiliate Gathering'}
 
 
 def sheet_id_dari(text):
@@ -79,50 +77,18 @@ def letters(i):
     return (chr(64 + i // 26) if i >= 26 else '') + chr(65 + i % 26)
 
 
-def seed_daftar():
-    return [dict(zip(DAFTAR_KOLOM, (True, SEED_NAMES.get(sid, sid[:8]), sid, tab, links, user, brand, hr)))
-            for sid, tab, links, user, brand, hr in EVENTS]
-
-
 def events_dari(daftar):
     """Baris daftar yang Aktif -> tuple seperti EVENTS."""
     return [(r['Sheet ID'], r['Tab'], r['Kolom link'], r['Kolom username'], r['Brand'], int(r['Baris header']))
             for r in daftar if r.get('Aktif') and r.get('Sheet ID') and r.get('Tab') and r.get('Kolom link')]
 
 
-def baca_daftar(sheets):
-    """Daftar event dari tab 'Daftar Event' di sheet Event, atau None kalau tab itu belum ada."""
-    meta = sheets.get(spreadsheetId=EVENT_SHEET_ID, fields='sheets.properties.title').execute(num_retries=3)
-    if DAFTAR_TAB not in [s['properties']['title'] for s in meta['sheets']]:
-        return None
-    vals = sheets.values().get(spreadsheetId=EVENT_SHEET_ID, range=f"'{DAFTAR_TAB}'!A2:H").execute(num_retries=3).get('values', [])
-    out = []
-    for r in vals:
-        r = r + [''] * (8 - len(r))
-        if r[2].strip() and r[3] != '':
-            out.append({'Aktif': str(r[0]).strip().upper() in ('TRUE', 'YA', '1'), 'Nama': r[1], 'Sheet ID': r[2].strip(),
-                        'Tab': r[3], 'Kolom link': r[4].strip(), 'Kolom username': r[5].strip(), 'Brand': r[6].strip(),
-                        'Baris header': int(r[7]) if str(r[7]).strip().isdigit() else 1})
-    return out
-
-
-def simpan_daftar(sheets, daftar):
-    """Tulis daftar ke tab 'Daftar Event' (dibuat kalau belum ada). Hanya dari tombol Simpan."""
-    meta = sheets.get(spreadsheetId=EVENT_SHEET_ID, fields='sheets.properties.title').execute(num_retries=3)
-    if DAFTAR_TAB not in [s['properties']['title'] for s in meta['sheets']]:
-        sheets.batchUpdate(spreadsheetId=EVENT_SHEET_ID, body={'requests': [{'addSheet': {'properties': {'title': DAFTAR_TAB}}}]}).execute(num_retries=3)
-    sheets.values().clear(spreadsheetId=EVENT_SHEET_ID, range=f"'{DAFTAR_TAB}'!A:H").execute(num_retries=3)
-    body = [DAFTAR_KOLOM] + [[bool(r.get('Aktif')), r.get('Nama', ''), r['Sheet ID'], r['Tab'], r['Kolom link'],
-                              r['Kolom username'], r['Brand'], int(r['Baris header'])] for r in daftar]
-    sheets.values().update(spreadsheetId=EVENT_SHEET_ID, range=f"'{DAFTAR_TAB}'!A1", valueInputOption='RAW',
-                           body={'values': body}).execute(num_retries=3)
-
-
-def siapkan(sheets, drive, email, events=None):
-    """Tahap baca saja: kumpulkan baris event dan cari yang baru per tujuan. Hasil: (rows, plans, user_plan).
-    events = daftar tuple seperti EVENTS (kosong = EVENTS bawaan). Sumber yang tidak bisa dibaca dilaporkan 'GAGAL' dan dilewati."""
+def siapkan(sheets, drive, email, events=None, event_sheet=EVENT_SHEET_ID, raw_sheet=RAW_SHEET_ID, raw_tab=RAW_TAB):
+    """Tahap baca saja: kumpulkan baris event dan cari yang baru per tujuan. Hasil: (rows, plans, user_plan, warna).
+    events = daftar tuple seperti EVENTS (kosong = EVENTS bawaan). Sumber yang tidak bisa dibaca dilaporkan 'GAGAL' dan dilewati.
+    warna = {sheet sumber: ({tab: [nomor baris]}, {tab: [indeks kolom username]})} untuk baris yang semua link-nya sudah masuk."""
     from googleapiclient.errors import HttpError
-    fetch, rows, titles = Fetcher(drive), [], {}
+    fetch, rows, titles, src = Fetcher(drive), [], {}, {}
     for sid, tab, links, user_col, brand, header_row in (events if events is not None else EVENTS):
         try:
             if sid not in titles:
@@ -132,42 +98,61 @@ def siapkan(sheets, drive, email, events=None):
         except HttpError as e:
             print(f'  GAGAL: {sid} / "{tab}" tidak bisa dibaca ({e.resp.status}). Share sheet ke {email} sebagai Viewer.')
             continue
-        got = list(rows_from_event(vals, links, user_col, brand, header_row, f'{titles[sid]} / {tab.strip()}', fetch))
-        print(f'  {titles[sid]} / {tab.strip()} [{links}]: {len(got)} link')
+        label = f'{titles[sid]} / {tab.strip()}'
+        src[label] = (sid, tab, col(user_col))
+        got = list(rows_from_event(vals, links, user_col, brand, header_row, label, fetch))
+        print(f'  {label} [{links}]: {len(got)} link')
         rows += got
 
-    meta = sheets.get(spreadsheetId=EVENT_SHEET_ID, fields='sheets.properties').execute(num_retries=3)
-    ev_tab = next(s['properties']['title'] for s in meta['sheets'] if s['properties']['sheetId'] == 0)
-    targets = [(EVENT_SHEET_ID, ev_tab, 'H', f'Event / {ev_tab}', 'event'),
-               (RAW_SHEET_ID, RAW_TAB, 'J', f'BW Comm / {RAW_TAB}', 'event_raw_content')]
-    plans = []
+    meta = sheets.get(spreadsheetId=event_sheet, fields='sheets.properties').execute(num_retries=3)
+    props = [s['properties'] for s in meta['sheets']]
+    ev_tab = next((p['title'] for p in props if p['sheetId'] == 0), props[0]['title'])  # tab pertama / gid 0 di sheet Event
+    targets = [(event_sheet, ev_tab, 'H', f'Event / {ev_tab}', 'event'),
+               (raw_sheet, raw_tab, 'J', f'BW Comm / {raw_tab}', 'event_raw_content')]
+    plans, done = [], []
     for sid, tab, note_col, label, name in targets:
         keys, last = read_keys(sheets, sid, tab, 'G')
         out = new_rows(rows, keys)
         report(label, rows, out, HERE / f'gabung_preview_{name}.csv')
-        if out and sid == RAW_SHEET_ID:
+        if out and sid == raw_sheet:
             for f in stale_formulas(sheets, sid, tab, last + len(out)):
                 print(f'  PERINGATAN: rumus H2/I2 berhenti sebelum baris {last + len(out)}; ubah rentangnya jadi '
                       f'terbuka (A2:A2009 -> A2:A):\n    {f[:100]}')
         plans.append((sid, tab, note_col, last, out))
-    raw_out = next((out for sid, _, _, _, out in plans if sid == RAW_SHEET_ID), [])
+        done.append(set(keys) | {key(r) for r in out})
+    raw_out = next((out for sid, _, _, _, out in plans if sid == raw_sheet), [])
     user_plan = []
     if raw_out:
         titles_raw = [x['properties']['title'] for x in sheets.get(
-            spreadsheetId=RAW_SHEET_ID, fields='sheets.properties.title').execute(num_retries=3)['sheets']]
-        user_plan = plan_users(sheets, RAW_SHEET_ID, titles_raw, raw_out, HERE / 'gabung_username_belum_ada_event.csv')
-    return rows, plans, user_plan
+            spreadsheetId=raw_sheet, fields='sheets.properties.title').execute(num_retries=3)['sheets']]
+        user_plan = plan_users(sheets, raw_sheet, titles_raw, raw_out, HERE / 'gabung_username_belum_ada_event.csv')
+
+    warna = {}
+    for label, nums in rows_done(rows, lambda k: all(k in d for d in done), None).items():
+        if nums and label in src:
+            sid, tab, ui = src[label]
+            per_tab, ucols = warna.setdefault(sid, ({}, {}))
+            per_tab[tab], ucols[tab] = nums, [ui]
+            print(f'  Diwarnai oranye (kolom username) di {label}: {len(nums)} baris')
+    return rows, plans, user_plan, warna
 
 
-def terapkan(plans, user_plan, sheets):
+def terapkan(plans, user_plan, sheets, warna=None, raw_sheet=RAW_SHEET_ID):
     """Tahap tulis (hanya dari --apply / tombol Terapkan)."""
+    from googleapiclient.errors import HttpError
     for sid, tab, note_col, last, out in plans:
         if out:
             print(f'Menulis {len(out)} baris ke "{tab}" (baris {last + 1}-{last + len(out)}) ...')
             write_below(sheets, sid, tab, last + 1, out, note_col)
             print(f'Selesai: {len(out)} baris ditambahkan ke "{tab}" (baris {last + 1}-{last + len(out)}).')
     if user_plan:
-        apply_users(sheets, RAW_SHEET_ID, user_plan, HERE / f'backup_username_tab_brand_{datetime.now():%Y%m%d_%H%M%S}.json')
+        apply_users(sheets, raw_sheet, user_plan, HERE / f'backup_username_tab_brand_{datetime.now():%Y%m%d_%H%M%S}.json')
+    for sid, (per_tab, ucols) in (warna or {}).items():
+        try:
+            mark_orange(sheets, sid, per_tab, ucols)
+            print(f'Selesai: {sum(map(len, per_tab.values()))} baris username diwarnai oranye di sheet {sid}.')
+        except HttpError as e:  # data utama sudah tertulis; warna butuh akses Editor ke sheet sumber
+            print(f'GAGAL mewarnai sheet {sid} ({e.resp.status}): jadikan service account Editor di sheet itu. Data tidak terpengaruh.')
 
 
 def main(argv=None):
@@ -175,11 +160,11 @@ def main(argv=None):
     ap.add_argument('--apply', action='store_true', help='benar-benar menulis ke Google Sheets')
     a = ap.parse_args(argv)
     sheets, drive, email = services(a.apply)
-    _, plans, user_plan = siapkan(sheets, drive, email)
+    _, plans, user_plan, warna = siapkan(sheets, drive, email)
     if not a.apply:
         print('\nDRY-RUN: tidak ada yang ditulis. Tambahkan --apply untuk menulis.')
         return
-    terapkan(plans, user_plan, sheets)
+    terapkan(plans, user_plan, sheets, warna)
 
 
 if __name__ == '__main__':
