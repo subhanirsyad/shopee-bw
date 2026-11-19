@@ -163,6 +163,7 @@ def terapkan(plans, user_plan, sheets):
     """Tahap tulis (hanya dari --apply / tombol Terapkan)."""
     for sid, tab, note_col, last, out in plans:
         if out:
+            print(f'Menulis {len(out)} baris ke "{tab}" (baris {last + 1}-{last + len(out)}) ...')
             write_below(sheets, sid, tab, last + 1, out, note_col)
             print(f'Selesai: {len(out)} baris ditambahkan ke "{tab}" (baris {last + 1}-{last + len(out)}).')
     if user_plan:

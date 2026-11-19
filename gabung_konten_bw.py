@@ -497,7 +497,10 @@ def apply_users(sheets, sid, plan, backup_path):
                      {'range': f"'{tab}'!N{n}:CF{n}", 'values': [fill_row(tpl, n)]}]
     Path(backup_path).write_text(json.dumps(backup), encoding='utf-8')
     print(f'Backup isi lama baris tab brand: {backup_path}')
+    for tab, first, users, _ in plan:
+        print(f'Menulis {len(users)} username + rumus N:CF ke tab "{tab}" (baris {first}-{first + len(users) - 1}) ...')
     for i in range(0, len(data), 100):
+        print(f'  kirim batch {i // 100 + 1}/{(len(data) + 99) // 100} ...')
         sheets.values().batchUpdate(spreadsheetId=sid, body={'valueInputOption': 'USER_ENTERED', 'data': data[i:i + 100]}).execute(num_retries=3)
     print(f'Selesai: {sum(len(u) for _, _, u, _ in plan)} username ditambahkan ke tab brand.')
 
@@ -533,6 +536,8 @@ def mark_orange(sheets, sid, per_tab, ucols):
                 runs[-1][1] = n
             else:
                 runs.append([n, n])
+        shown = ', '.join(f'{a}-{b}' if a != b else str(a) for a, b in runs[:8]) + (' ...' if len(runs) > 8 else '')
+        print(f'Mewarnai oranye {len(nums)} baris di tab "{tab}": {shown}')
         for a, b in runs:
             for c in ucols.get(tab, []):
                 reqs.append({'repeatCell': {'range': {'sheetId': ids[tab], 'startRowIndex': a - 1, 'endRowIndex': b,
@@ -540,6 +545,7 @@ def mark_orange(sheets, sid, per_tab, ucols):
                                             'cell': {'userEnteredFormat': {'backgroundColor': ORANGE}},
                                             'fields': 'userEnteredFormat.backgroundColor'}})
     for i in range(0, len(reqs), 100):
+        print(f'  kirim warna batch {i // 100 + 1}/{(len(reqs) + 99) // 100} ...')
         sheets.batchUpdate(spreadsheetId=sid, body={'requests': reqs[i:i + 100]}).execute(num_retries=3)
 
 
@@ -644,9 +650,11 @@ def terapkan(p, sheets):
     a, target, ucols, g_out, g_last, r_out, r_last = p.a, p.target, p.ucols, p.g_out, p.g_last, p.r_out, p.r_last
     user_plan, per_tab = p.user_plan, p.per_tab
     if g_out:
+        print(f'Menulis {len(g_out)} baris ke "{target}" (baris {g_last + 1}-{g_last + len(g_out)}) ...')
         write_below(sheets, a.sheet, target, g_last + 1, g_out, 'H')
         print(f'Selesai: {len(g_out)} baris ditambahkan ke "{target}" (baris {g_last + 1}-{g_last + len(g_out)}).')
     if r_out:
+        print(f'Menulis {len(r_out)} baris ke "{a.raw_tab}" (baris {r_last + 1}-{r_last + len(r_out)}) ...')
         write_below(sheets, a.raw_sheet, a.raw_tab, r_last + 1, r_out, 'J')
         print(f'Selesai: {len(r_out)} baris ditambahkan ke "{a.raw_tab}" (baris {r_last + 1}-{r_last + len(r_out)}).')
     if user_plan:

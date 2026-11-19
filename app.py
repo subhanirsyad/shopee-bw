@@ -140,14 +140,35 @@ def n(x):
 
 
 # ------------------------------------------------------------------ helper jalan
+class Live(io.StringIO):
+    """Simpan semua print untuk log akhir, sekaligus tampilkan 25 baris terakhir langsung di halaman selagi jalan."""
+
+    def __init__(self, ph):
+        super().__init__()
+        self.ph = ph
+
+    def write(self, s):
+        r = super().write(s)
+        if '\n' in s:
+            try:
+                self.ph.code(''.join(self.getvalue().splitlines(True)[-25:]), language=None)
+            except Exception:  # noqa: BLE001  # thread non-Streamlit: abaikan, log akhir tetap lengkap
+                pass
+        return r
+
+
 def capture(fn, *args, **kw):
     """Jalankan fn, tangkap print-nya sebagai log. SystemExit (pesan ERROR dari skrip) jadi RuntimeError."""
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        try:
-            res = fn(*args, **kw)
-        except SystemExit as e:
-            raise RuntimeError(str(e.code)) from None
+    ph = st.empty()
+    buf = Live(ph)
+    try:
+        with contextlib.redirect_stdout(buf):
+            try:
+                res = fn(*args, **kw)
+            except SystemExit as e:
+                raise RuntimeError(str(e.code)) from None
+    finally:
+        ph.empty()  # log lengkap ditampilkan pemanggil sesudahnya
     return res, buf.getvalue()
 
 
